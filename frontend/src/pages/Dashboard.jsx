@@ -3,8 +3,7 @@ import { getMyDevices } from "../services/device";
 import { connectSocket, disconnectSocket } from "../services/socket";
 import api from "../services/api";
 
-const MEDIAMTX_WEBRTC_URL = import.meta.env.VITE_MEDIAMTX_WEBRTC_URL ||
-  (import.meta.env.DEV ? "http://localhost:8889/mystream/" : "");
+const DCAST_EMBED_URL = "https://dcast.tv/embed/1097217eabd5211d10732ee8816f758a";
 
 const events = [
   {
@@ -1355,23 +1354,18 @@ console.log(
                     </p>
                   </div>
                   <span className="rounded-full bg-blue-500/10 px-2.5 py-1 text-[10px] font-semibold text-blue-300">
-                    LIVE STREAM
+                    DCAST CLOUD STREAM
                   </span>
                 </div>
                 <div className="aspect-video bg-black">
-                  {MEDIAMTX_WEBRTC_URL ? (
-                    <iframe
-                      title="MediaMTX Live Camera"
-                      src={MEDIAMTX_WEBRTC_URL}
-                      allow="autoplay; fullscreen; picture-in-picture"
-                      referrerPolicy="no-referrer"
-                      className="h-full w-full border-0"
-                    />
-                  ) : (
-                    <div className="flex h-full items-center justify-center px-4 text-center text-xs text-slate-400">
-                      Live video server is not configured. Set VITE_MEDIAMTX_WEBRTC_URL in your deployment environment.
-                    </div>
-                  )}
+                  <iframe
+                    title="DCAST Cloud Live Camera"
+                    src={DCAST_EMBED_URL}
+                    allow="autoplay; fullscreen; encrypted-media; picture-in-picture; payment; clipboard-write"
+                    referrerPolicy="strict-origin-when-cross-origin"
+                    allowFullScreen
+                    className="h-full w-full border-0"
+                  />
                 </div>
               </div>
 

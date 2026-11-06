@@ -10,6 +10,26 @@ import {
 } from "../services/cameraDevice";
 
 const HEARTBEAT_INTERVAL_MS = 30 * 1000;
+const DCAST_WHIP_URL = import.meta.env.VITE_DCAST_WHIP_URL || "";
+
+const waitForIceGatheringComplete = (peerConnection, timeoutMs = 10000) =>
+  new Promise((resolve) => {
+    if (peerConnection.iceGatheringState === "complete") return resolve();
+
+    const timeoutId = window.setTimeout(() => {
+      peerConnection.removeEventListener("icegatheringstatechange", checkState);
+      resolve();
+    }, timeoutMs);
+
+    const checkState = () => {
+      if (peerConnection.iceGatheringState !== "complete") return;
+      window.clearTimeout(timeoutId);
+      peerConnection.removeEventListener("icegatheringstatechange", checkState);
+      resolve();
+    };
+
+    peerConnection.addEventListener("icegatheringstatechange", checkState);
+  });
 const RTC_CONFIGURATION = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
 };
@@ -87,6 +107,9 @@ function CameraDevice() {
 
   const videoRef = useRef(null);
   const streamRef = useRef(null);
+  const whipPeerConnectionRef = useRef(null);
+  const whipSessionUrlRef = useRef("");
+  const whipStatsIntervalRef = useRef(null);
   const deviceSocketRef = useRef(null);
   // JPEG frame streaming refs
 const frameCanvasRef = useRef(null);
@@ -129,13 +152,107 @@ const frameInFlightRef = useRef(false);
     setActiveViewers(0);
   }, []);
 
+ const stopWhipStats = useCallback(() => {
+  if (whipStatsIntervalRef.current) {
+    window.clearInterval(whipStatsIntervalRef.current);
+    whipStatsIntervalRef.current = null;
+  }
+ }, []);
+
+ const startWhipStats = useCallback((peerConnection) => {
+  stopWhipStats();
+
+  const logStats = async () => {
+    if (!peerConnection || peerConnection.signalingState === "closed") {
+      stopWhipStats();
+      return;
+    }
+
+    try {
+      const stats = await peerConnection.getStats();
+      const reports = [];
+
+      stats.forEach((item) => {
+        if (item.type === "outbound-rtp" &&
+            (item.kind === "video" || item.mediaType === "video")) {
+          const codec = item.codecId ? stats.get(item.codecId) : null;
+          reports.push({
+            type: "outbound-video",
+            bytesSent: item.bytesSent ?? 0,
+            packetsSent: item.packetsSent ?? 0,
+            framesEncoded: item.framesEncoded ?? 0,
+            framesSent: item.framesSent ?? 0,
+            keyFramesEncoded: item.keyFramesEncoded ?? 0,
+            frameWidth: item.frameWidth ?? null,
+            frameHeight: item.frameHeight ?? null,
+            framesPerSecond: item.framesPerSecond ?? null,
+            qualityLimitationReason: item.qualityLimitationReason ?? null,
+            codec: codec?.mimeType ?? null,
+          });
+        }
+
+        if (item.type === "remote-inbound-rtp" &&
+            (item.kind === "video" || item.mediaType === "video")) {
+          reports.push({
+            type: "remote-inbound-video",
+            packetsReceived: item.packetsReceived ?? 0,
+            packetsLost: item.packetsLost ?? 0,
+            fractionLost: item.fractionLost ?? 0,
+            roundTripTime: item.roundTripTime ?? null,
+          });
+        }
+
+        if (item.type === "candidate-pair" &&
+            item.state === "succeeded" && item.nominated) {
+          reports.push({
+            type: "selected-candidate-pair",
+            currentRoundTripTime: item.currentRoundTripTime ?? null,
+            availableOutgoingBitrate: item.availableOutgoingBitrate ?? null,
+          });
+        }
+      });
+
+      console.log("[DCAST WHIP STATS]", {
+        connectionState: peerConnection.connectionState,
+        iceConnectionState: peerConnection.iceConnectionState,
+        signalingState: peerConnection.signalingState,
+        reports,
+      });
+    } catch (statsError) {
+      console.warn("[DCAST WHIP STATS] Could not read stats:", statsError);
+    }
+  };
+
+  logStats();
+  whipStatsIntervalRef.current = window.setInterval(logStats, 5000);
+ }, [stopWhipStats]);
+
  const stopCamera = useCallback(() => {
-  // Stop JPEG frame streaming
+  stopWhipStats();
+  // Stop the DCAST WHIP publishing session.
+  const peerConnection = whipPeerConnectionRef.current;
+  const sessionUrl = whipSessionUrlRef.current;
+  whipPeerConnectionRef.current = null;
+  whipSessionUrlRef.current = "";
+
+  if (peerConnection) {
+    peerConnection.getSenders().forEach((sender) => {
+      try { sender.track?.stop(); } catch { /* best-effort cleanup */ }
+    });
+    peerConnection.close();
+  }
+
+  if (sessionUrl) {
+    fetch(sessionUrl, { method: "DELETE" }).catch((error) => {
+      console.warn("[DCAST WHIP] Session cleanup failed:", error);
+    });
+  }
+
+  // Stop legacy JPEG frame relay if it was started by an older build.
   if (frameIntervalRef.current) {
     window.clearInterval(frameIntervalRef.current);
     frameIntervalRef.current = null;
   }
-
   frameInFlightRef.current = false;
 
   closeAllPeerConnections();
@@ -145,12 +262,9 @@ const frameInFlightRef = useRef(false);
     streamRef.current = null;
   }
 
-  if (videoRef.current) {
-    videoRef.current.srcObject = null;
-  }
-
+  if (videoRef.current) videoRef.current.srcObject = null;
   setCameraStatus("stopped");
-}, [closeAllPeerConnections]);
+}, [closeAllPeerConnections, stopWhipStats]);
 
   const verifySavedDevice = useCallback(async () => {
     const savedDeviceId = getStoredCameraDeviceId();
@@ -184,16 +298,26 @@ const frameInFlightRef = useRef(false);
     verifySavedDevice();
 
     return () => {
+      stopWhipStats();
       closeAllPeerConnections();
+      if (whipPeerConnectionRef.current) {
+        whipPeerConnectionRef.current.close();
+        whipPeerConnectionRef.current = null;
+      }
+      if (whipSessionUrlRef.current) {
+        fetch(whipSessionUrlRef.current, { method: "DELETE" }).catch(() => {});
+        whipSessionUrlRef.current = "";
+      }
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
       }
       if (frameIntervalRef.current) {
-  window.clearInterval(frameIntervalRef.current);
-  frameIntervalRef.current = null;
-}
+        window.clearInterval(frameIntervalRef.current);
+        frameIntervalRef.current = null;
+      }
     };
-  }, [verifySavedDevice, closeAllPeerConnections]);
+  }, [verifySavedDevice, closeAllPeerConnections, stopWhipStats]);
 
   // Device namespace Socket.IO connection and WebRTC signaling.
   useEffect(() => {
@@ -493,141 +617,108 @@ const frameInFlightRef = useRef(false);
       return;
     }
 
+    if (!DCAST_WHIP_URL) {
+      setError("DCAST WHIP is not configured. Add VITE_DCAST_WHIP_URL to the frontend environment and rebuild.");
+      return;
+    }
+
     if (!navigator.mediaDevices?.getUserMedia) {
       setError("Camera access requires HTTPS or localhost and a supported browser.");
       return;
     }
 
+    let stream;
+    let peerConnection;
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
         video: {
           facingMode: { ideal: "environment" },
           width: { ideal: 1280 },
           height: { ideal: 720 },
+          frameRate: { ideal: 24, max: 30 },
         },
       });
 
       streamRef.current = stream;
-
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
-      // ==========================================
-// JPEG FRAME STREAMING
-// ==========================================
 
-const canvas = document.createElement("canvas");
-
-canvas.width = 640;
-canvas.height = 360;
-
-frameCanvasRef.current = canvas;
-
-const context = canvas.getContext("2d");
-
-if (frameIntervalRef.current) {
-  window.clearInterval(frameIntervalRef.current);
-}
-
-frameIntervalRef.current = window.setInterval(async () => {
-  const video = videoRef.current;
-  const socket = deviceSocketRef.current;
-
-  // Check camera and socket availability
-  if (
-    !video ||
-    video.readyState < 2 ||
-    !socket?.connected ||
-    frameInFlightRef.current
-  ) {
-    return;
-  }
-
-  const currentDeviceId = getStoredCameraDeviceId();
-
-  if (!currentDeviceId) return;
-
-  frameInFlightRef.current = true;
-  const captureStartedAt = performance.now();
-
-  try {
-    // Preserve original aspect ratio
-    const scale = Math.min(
-      640 / video.videoWidth,
-      360 / video.videoHeight
-    );
-
-    const width = video.videoWidth * scale;
-    const height = video.videoHeight * scale;
-
-    const x = (640 - width) / 2;
-    const y = (360 - height) / 2;
-
-    context.fillStyle = "#000000";
-    context.fillRect(0, 0, 640, 360);
-
-    context.drawImage(video, x, y, width, height);
-
-    const blob = await new Promise((resolve) => {
-      canvas.toBlob(resolve, "image/jpeg", 0.55);
-    });
-
-    if (!blob || !socket.connected) return;
-
-    if (blob.size > 200 * 1024) {
-      console.warn("[CAMERA] Frame too large:", blob.size);
-      return;
-    }
-
-    const frame = await blob.arrayBuffer();
-
-    socket.emit(
-  "camera:frame",
-  {
-    deviceId: currentDeviceId,
-    frame,
-  },
-  (response) => {
-    if (response?.success) {
-      console.log("[CAMERA ACK]", {
-        received: response.success,
-        frameSize: response.frameSize,
-        viewers: response.viewers,
-        relayed: response.relayed,
+      peerConnection = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
       });
-    } else {
-      console.warn("[CAMERA ACK FAILED]", response);
-    }
-  }
-);
+      whipPeerConnectionRef.current = peerConnection;
 
-    console.log("[CAMERA] JPEG frame sent:", blob.size, "bytes");
+      stream.getTracks().forEach((track) => {
+        peerConnection.addTrack(track, stream);
+      });
 
-  } catch (frameError) {
-    console.error("[CAMERA] Frame capture error:", frameError);
-    
-  } finally {
-    console.log("[CAMERA CAPTURE PERFORMANCE]", {
-  processingTimeMs: (
-    performance.now() - captureStartedAt
-  ).toFixed(2),
-});
-    frameInFlightRef.current = false;
-  }
+      peerConnection.addEventListener("connectionstatechange", () => {
+        console.log("[DCAST WHIP] Connection state:", peerConnection.connectionState);
+        if (peerConnection.connectionState === "connected") {
+          startWhipStats(peerConnection);
+        }
+        if (["failed", "closed"].includes(peerConnection.connectionState)) {
+          stopWhipStats();
+        }
+        if (peerConnection.connectionState === "failed") {
+          setCameraStatus("stopped");
+          setError("DCAST WHIP connection failed. Check the phone network and WHIP URL.");
+        }
+      });
 
-}, 200);
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      await waitForIceGatheringComplete(peerConnection);
 
+      const response = await fetch(DCAST_WHIP_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/sdp" },
+        body: peerConnection.localDescription.sdp,
+      });
+
+      if (!response.ok) {
+        const responseText = await response.text().catch(() => "");
+        throw new Error(`DCAST WHIP rejected the offer (${response.status}). ${responseText.slice(0, 180)}`);
+      }
+
+      const answerSdp = await response.text();
+      if (!answerSdp || !answerSdp.startsWith("v=")) {
+        throw new Error("DCAST returned an invalid WHIP SDP answer.");
+      }
+
+      const locationHeader = response.headers.get("Location");
+      if (locationHeader) {
+        whipSessionUrlRef.current = new URL(locationHeader, DCAST_WHIP_URL).toString();
+      }
+
+      await peerConnection.setRemoteDescription({ type: "answer", sdp: answerSdp });
       setCameraStatus("running");
-      setNotice("Camera preview started. The phone is ready to serve WebRTC viewers.");
+      setNotice("Camera is publishing to DCAST Cloud. Open the Dashboard to verify the live video.");
     } catch (cameraError) {
+      console.error("[DCAST WHIP] Publish error:", cameraError);
+      stopWhipStats();
+
+      if (peerConnection) {
+        peerConnection.close();
+        if (whipPeerConnectionRef.current === peerConnection) {
+          whipPeerConnectionRef.current = null;
+        }
+      }
+      if (stream) {
+        stream.getTracks().forEach((track) => track.stop());
+        if (streamRef.current === stream) streamRef.current = null;
+      }
+      if (videoRef.current) videoRef.current.srcObject = null;
+
       setCameraStatus("stopped");
-      setError(
-        cameraError.name === "NotAllowedError"
-          ? "Camera permission was denied. Allow camera access in Chrome settings."
-          : cameraError.message || "Unable to start the camera."
-      );
+      const message = cameraError.name === "NotAllowedError"
+        ? "Camera permission was denied. Allow camera access in Chrome settings."
+        : cameraError.message || "Unable to publish camera to DCAST.";
+      setError(message);
     }
   };
 
@@ -804,7 +895,7 @@ frameIntervalRef.current = window.setInterval(async () => {
             <div>
               <h2 className="font-semibold">Camera Preview</h2>
               <p className="mt-1 text-xs text-slate-400">
-                Local preview on this phone
+                Phone camera · DCAST Cloud publishing
               </p>
             </div>
             <span
@@ -849,9 +940,9 @@ frameIntervalRef.current = window.setInterval(async () => {
         </section>
 
         <p className="mt-5 text-center text-xs leading-5 text-slate-500">
-          Keep this browser tab open while using the phone as a camera. The
-          device connects to the server for WebRTC signaling; video is sent
-          directly to authorized Dashboard viewers.
+          Keep this browser tab open while using the phone as a camera. Video is
+          published directly from this phone to DCAST Cloud using WHIP; the
+          Dashboard plays the DCAST stream.
         </p>
 
         {authStatus === "authenticated" && (
