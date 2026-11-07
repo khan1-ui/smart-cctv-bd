@@ -3,7 +3,7 @@ import { getMyDevices } from "../services/device";
 import { connectSocket, disconnectSocket } from "../services/socket";
 import api from "../services/api";
 
-const DCAST_EMBED_URL = "https://dcast.tv/embed/1097217eabd5211d10732ee8816f758a";
+const DCAST_EMBED_URL = "https://dcast.tv/embed/deb044115dd6f6b0f66ca02cea1e41be";
 
 const events = [
   {
