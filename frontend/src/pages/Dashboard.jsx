@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { getMyDevices } from "../services/device";
 import { connectSocket, disconnectSocket } from "../services/socket";
 import api from "../services/api";
@@ -45,63 +46,58 @@ const views = [
   "Shared Views",
 ];
 const monitorWebRTC = (pc, label) => {
-  pc.addEventListener("iceconnectionstatechange", () => {
-    console.log(`[${label}] ICE State:`, pc.iceConnectionState);
-  });
 
-  pc.addEventListener("connectionstatechange", () => {
-    console.log(`[${label}] Connection State:`, pc.connectionState);
-  });
-
-  pc.addEventListener("signalingstatechange", () => {
-    console.log(`[${label}] Signaling State:`, pc.signalingState);
-  });
-
-  pc.addEventListener("icegatheringstatechange", () => {
-    console.log(`[${label}] Gathering State:`, pc.iceGatheringState);
-  });
-
-  pc.addEventListener("icecandidate", (event) => {
-  if (event.candidate) {
-    console.log(`[${label}] ICE Candidate:`, event.candidate.candidate);
-
-    console.log(`[${label}] Candidate Details:`, {
-      type: event.candidate.type,
-      protocol: event.candidate.protocol,
-      address: event.candidate.address,
-      port: event.candidate.port,
+  const logState = (eventName) => {
+    console.log(`[${label}] ${eventName}`, {
+      signalingState: pc.signalingState,
+      iceGatheringState: pc.iceGatheringState,
+      iceConnectionState: pc.iceConnectionState,
+      connectionState: pc.connectionState,
+      hasLocalDescription: Boolean(pc.localDescription),
+      hasRemoteDescription: Boolean(pc.remoteDescription),
     });
-  } else {
-    console.log(`[${label}] ICE Gathering Complete`);
-  }
-});
+  };
 
+  pc.addEventListener("iceconnectionstatechange", async () => {
+    logState("ICE state changed");
+    if (pc.iceConnectionState !== "failed") return;
+
+    try {
+      const stats = await pc.getStats();
+      stats.forEach((item) => {
+        if (item.type === "candidate-pair" ||
+            item.type === "local-candidate" ||
+            item.type === "remote-candidate") {
+          console.log(`[${label}] ICE diagnostic:`, item);
+        }
+      });
+    } catch (error) {
+      console.error(`[${label}] getStats failed:`, error);
+    }
+  });
+
+  pc.addEventListener("connectionstatechange", () => logState("Connection state changed"));
+  pc.addEventListener("signalingstatechange", () => logState("Signaling state changed"));
+  pc.addEventListener("icegatheringstatechange", () => logState("Gathering state changed"));
+  pc.addEventListener("icecandidate", (event) => {
+    console.log(`[${label}] ICE candidate event:`, {
+      candidate: event.candidate?.candidate ?? null,
+      candidateType: event.candidate?.type ?? null,
+      protocol: event.candidate?.protocol ?? null,
+      gatheringState: pc.iceGatheringState,
+    });
+  });
   pc.addEventListener("icecandidateerror", (event) => {
-    console.error(`[${label}] ICE Candidate Error:`, {
+    console.error(`[${label}] ICE candidate error:`, {
       url: event.url,
       code: event.errorCode,
       message: event.errorText,
     });
   });
-
-  pc.addEventListener("iceconnectionstatechange", async () => {
-    if (pc.iceConnectionState !== "failed") return;
-
-    const stats = await pc.getStats();
-
-    stats.forEach((item) => {
-      if (item.type === "candidate-pair") {
-        console.log(`[${label}] Candidate Pair:`, item);
-      }
-
-      if (item.type === "local-candidate" ||
-          item.type === "remote-candidate") {
-        console.log(`[${label}] Candidate Detail:`, item);
-      }
-    });
-  });
 };
+
 function Dashboard() {
+  const navigate = useNavigate();
   const [activeView, setActiveView] = useState("Recent Views");
 
   const [cameras, setCameras] = useState([]);
@@ -164,6 +160,15 @@ const jpegStatsRef = useRef({
     setRemoteStream(null);
     setStreamStatus("idle");
   };
+
+  useEffect(() => {
+    if (remoteVideoRef.current && remoteStream && remoteVideoRef.current.srcObject !== remoteStream) {
+      remoteVideoRef.current.srcObject = remoteStream;
+      remoteVideoRef.current.play().catch((error) => {
+        console.warn("Remote video autoplay was blocked:", error);
+      });
+    }
+  }, [remoteStream]);
 
   // Fetch the authenticated user's paired cameras.
   const loadCameras = async () => {
@@ -268,6 +273,38 @@ const jpegStatsRef = useRef({
       });
     };
 
+      
+const handleCameraAccessRevoked = (payload) => {
+  if (
+    !payload?.deviceId ||
+    payload.deviceId !== selectedCameraRef.current?.deviceId
+  ) {
+    return;
+  }
+
+  console.warn(
+    "[DASHBOARD] Camera access revoked:",
+    payload.deviceId
+  );
+
+  // Close the active WebRTC connection
+  closeViewerConnection();
+
+  // Remove the previously received JPEG frame
+  if (jpegFrameUrlRef.current) {
+    URL.revokeObjectURL(jpegFrameUrlRef.current);
+    jpegFrameUrlRef.current = null;
+  }
+
+  setJpegFrameUrl(null);
+
+  setStreamStatus("error");
+  setStreamError(
+    payload.message ||
+      "Your access to this camera has been revoked."
+  );
+};
+
     try {
       socket = connectSocket();
       dashboardSocketRef.current = socket;
@@ -276,6 +313,7 @@ const jpegStatsRef = useRef({
       socket.on("disconnect", handleDisconnect);
       socket.on("connect_error", handleConnectError);
       socket.on("camera:status", handleCameraStatus);
+      socket.on("camera:access-revoked",handleCameraAccessRevoked);
       // Receive JPEG camera frames
 const handleCameraFrame = (payload) => {
   if (
@@ -470,6 +508,7 @@ console.log("[DASHBOARD TEST] After Remote Description:", {
         socket.off("disconnect", handleDisconnect);
         socket.off("connect_error", handleConnectError);
         socket.off("camera:status", handleCameraStatus);
+        socket.off("camera:access-revoked",handleCameraAccessRevoked);
         socket.off("webrtc:answer");
         socket.off("webrtc:ice-candidate");
         if (dashboardSocketRef.current === socket) {
@@ -517,176 +556,151 @@ console.trace();
       }
 
       try {
-        const pc = new RTCPeerConnection({
-          iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-        });
-        console.log("[DASHBOARD PC CONFIG]", {
-  configuration: pc.getConfiguration(),
-  signalingState: pc.signalingState,
-  iceGatheringState: pc.iceGatheringState,
-  connectionState: pc.connectionState,
-  transceivers: pc.getTransceivers().map((t) => ({
-    direction: t.direction,
-    currentDirection: t.currentDirection,
-    mid: t.mid,
-  })),
+      const pc = new RTCPeerConnection({
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" }
+  ]
 });
+
         peerConnectionRef.current = pc;
         monitorWebRTC(pc, "DASHBOARD");
 
+        console.log("[DASHBOARD] PeerConnection created", {
+          deviceId: camera.deviceId,
+          configuration: pc.getConfiguration(),
+          signalingState: pc.signalingState,
+          iceGatheringState: pc.iceGatheringState,
+        });
+
         pc.ontrack = (event) => {
-          const stream = event.streams?.[0];
-          if (stream) {
-            setRemoteStream(stream);
-            if (remoteVideoRef.current) {
-              remoteVideoRef.current.srcObject = stream;
-              remoteVideoRef.current.play().catch((error) => {
-                console.warn("Remote video autoplay was blocked:", error);
-              });
-            }
-            setStreamStatus("live");
-            setStreamError("");
-          }
-        };
+  console.log("[DASHBOARD] VIDEO TRACK RECEIVED:", {
+    trackKind: event.track?.kind,
+    trackId: event.track?.id,
+    readyState: event.track?.readyState,
+    muted: event.track?.muted,
+    streamsCount: event.streams?.length,
+    receiverTrack: event.receiver?.track?.kind,
+  });
 
-pc.onicecandidate = (event) => {
-  console.log(
-    "[DASHBOARD] ICE Event:",
-    event.candidate?.candidate || "Gathering Complete"
-  );
+  const stream =
+    event.streams?.[0] ||
+    new MediaStream([event.track]);
 
-  if (event.candidate && socket.connected) {
-    console.log("[DASHBOARD] Sending ICE Candidate");
+  setRemoteStream(stream);
 
-    socket.emit("webrtc:ice-candidate", {
-      deviceId: camera.deviceId,
-      candidate: event.candidate,
+  if (remoteVideoRef.current) {
+    remoteVideoRef.current.srcObject = stream;
+
+    remoteVideoRef.current.play().catch((error) => {
+      console.warn("[DASHBOARD] Video playback error:", error);
     });
   }
+
+  setStreamStatus("live");
+  setStreamError("");
 };
+
+        // Trickle ICE: send each Dashboard candidate to the Camera via Socket.IO.
+        // Candidates may arrive before the offer; CameraDevice queues them by viewerSocketId.
+        pc.onicecandidate = (event) => {
+          if (!event.candidate) {
+            console.log("[DASHBOARD] ICE gathering complete");
+            return;
+          }
+
+          if (
+            cancelled ||
+            !socket?.connected ||
+            peerConnectionRef.current !== pc
+          ) {
+            return;
+          }
+
+          const candidate = event.candidate.toJSON();
+          console.log("[DASHBOARD] Sending local ICE candidate:", {
+            candidate: candidate.candidate,
+            type: event.candidate.type,
+            protocol: event.candidate.protocol,
+          });
+
+          socket.emit(
+            "webrtc:ice-candidate",
+            { deviceId: camera.deviceId, candidate },
+            (result) => {
+              if (!result?.success) {
+                console.error(
+                  "[DASHBOARD] ICE candidate delivery failed:",
+                  result?.message || "No acknowledgement from server"
+                );
+              }
+            }
+          );
+        };
+
         pc.onconnectionstatechange = () => {
           if (cancelled) return;
           if (pc.connectionState === "connected") {
             setStreamStatus("live");
+            setStreamError("");
           } else if (pc.connectionState === "connecting") {
             setStreamStatus("connecting");
           } else if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
             setStreamStatus(pc.connectionState === "failed" ? "error" : "offline");
             if (pc.connectionState === "failed") {
-              setStreamError("WebRTC connection failed. A TURN server may be required on this network.");
+              setStreamError("WebRTC ICE connection failed. Check the ICE diagnostics; a TURN relay may be needed on this network.");
             }
           }
         };
 
-        // Explicitly create a receive-only video transceiver.
-pc.addTransceiver("video", {
-  direction: "recvonly",
-});
+        pc.addTransceiver("video", { direction: "recvonly" });
 
-const offer = await pc.createOffer();
+        console.log("[DASHBOARD] Creating offer", {
+          transceivers: pc.getTransceivers().map((transceiver) => ({
+            direction: transceiver.direction,
+            mid: transceiver.mid,
+          })),
+        });
 
-        // The effect may have been cleaned up while createOffer was pending.
-        if (cancelled || peerConnectionRef.current !== pc) {
-          pc.close();
-          return;
-        }
-            pc.onicegatheringstatechange = () => {
-  console.log(
-    "[DASHBOARD] Gathering State Changed:",
-    pc.iceGatheringState
-  );
-};
-
-
-        // Set the local description exactly once. This starts ICE gathering.
-        console.log("[DASHBOARD] Before setLocalDescription", {
-  signalingState: pc.signalingState,
-  iceGatheringState: pc.iceGatheringState,
-  iceConnectionState: pc.iceConnectionState,
-  connectionState: pc.connectionState,
-});
-
-pc.addEventListener("icegatheringstatechange", () => {
-  console.log("[DASHBOARD] Gathering State Changed:", {
-    state: pc.iceGatheringState,
-    signalingState: pc.signalingState,
-    connectionState: pc.connectionState,
-  });
-});
-
-pc.addEventListener("icecandidate", (event) => {
-  console.log("[DASHBOARD] ICE Candidate Event:", {
-    candidate: event.candidate?.candidate ?? null,
-    gatheringState: pc.iceGatheringState,
-  });
-});
-
-await pc.setLocalDescription(offer);
-console.log("[DASHBOARD PC IDENTITY CHECK]", {
-  isSamePC: peerConnectionRef.current === pc,
-  signalingState: pc.signalingState,
-  iceGatheringState: pc.iceGatheringState,
-  iceConnectionState: pc.iceConnectionState,
-  connectionState: pc.connectionState,
-  localDescriptionExists: !!pc.localDescription,
-  localSDPCandidates:
-    pc.localDescription?.sdp
-      ?.split(/\r?\n/)
-      .filter((line) => line.startsWith("a=candidate:"))
-      .length ?? 0,
-});
-
-console.log(
-  "[DASHBOARD SDP CANDIDATES]",
-  pc.localDescription?.sdp
-    .split("\r\n")
-    .filter(line => line.startsWith("a=candidate:"))
-);
-console.log("[DASHBOARD LOCAL SDP CHECK]", {
-  gatheringState: pc.iceGatheringState,
-  hasLocalDescription: !!pc.localDescription,
-  hasCandidate: pc.localDescription?.sdp.includes("a=candidate:"),
-  signalingState: pc.signalingState,
-});
-console.log("[DASHBOARD TEST] PC Reference:", {
-  sameConnection: peerConnectionRef.current === pc,
-  signalingState: pc.signalingState,
-  iceGatheringState: pc.iceGatheringState,
-  connectionState: pc.connectionState,
-  closed: pc.signalingState === "closed",
-});
-
-setTimeout(() => {
-  console.log("[DASHBOARD TEST] After 3 seconds:", {
-    sameConnection: peerConnectionRef.current === pc,
-    signalingState: pc.signalingState,
-    iceGatheringState: pc.iceGatheringState,
-    connectionState: pc.connectionState,
-  });
-}, 3000);
-
-console.log("[DASHBOARD] After setLocalDescription", {
-  signalingState: pc.signalingState,
-  iceGatheringState: pc.iceGatheringState,
-  iceConnectionState: pc.iceConnectionState,
-  connectionState: pc.connectionState,
-});
-
-        // Do not signal an offer from a stale/closed viewer session.
+        const offer = await pc.createOffer();
         if (cancelled || peerConnectionRef.current !== pc) {
           pc.close();
           return;
         }
 
-console.log("[DASHBOARD] Local Description Set");
-console.log(
-  "[DASHBOARD] ICE Gathering State:",
-  pc.iceGatheringState
-);
-console.log(
-  "[DASHBOARD] Local SDP:",
-  pc.localDescription?.sdp
-);
+        console.log("[DASHBOARD] Offer created", {
+          type: offer.type,
+          sdpLength: offer.sdp?.length ?? 0,
+          signalingState: pc.signalingState,
+        });
+
+        await pc.setLocalDescription(offer);
+        console.log("[DASHBOARD] Local description applied", {
+  signalingState: pc.signalingState,
+  iceGatheringState: pc.iceGatheringState,
+  connectionState: pc.connectionState,
+  samePC: peerConnectionRef.current === pc,
+  cancelled,
+});
+       
+
+        if (cancelled || peerConnectionRef.current !== pc || pc.signalingState === "closed") {
+          pc.close();
+          return;
+        }
+
+        if (!pc.localDescription?.sdp) {
+          throw new Error("Dashboard could not create a local SDP offer.");
+        }
+
+        // Do not wait for ICE gathering. Send the SDP now; candidates are
+        // delivered independently by pc.onicecandidate above.
+        setStreamStatus("connecting");
+        console.log("[DASHBOARD] Sending WebRTC offer", {
+          deviceId: camera.deviceId,
+          signalingState: pc.signalingState,
+          iceGatheringState: pc.iceGatheringState,
+          sdpLength: pc.localDescription.sdp.length,
+        });
 
         socket.emit(
           "webrtc:offer",
@@ -699,6 +713,7 @@ console.log(
               closeViewerConnection();
               return;
             }
+            console.log("[DASHBOARD] WebRTC offer delivered successfully");
             setStreamStatus("connecting");
           }
         );
@@ -712,6 +727,19 @@ console.log(
 
     return () => {
       cancelled = true;
+      console.warn("[DASHBOARD] WEBRTC EFFECT CLEANUP", {
+  deviceId: camera?.deviceId,
+  cancelled,
+  socketConnected,
+  time: new Date().toISOString(),
+  pcState: peerConnectionRef.current
+    ? {
+        signalingState: peerConnectionRef.current.signalingState,
+        iceGatheringState: peerConnectionRef.current.iceGatheringState,
+        connectionState: peerConnectionRef.current.connectionState,
+      }
+    : null,
+});
       if (socket?.connected) {
         socket.emit("webrtc:leave", { deviceId: camera.deviceId }, () => {});
         socket.emit("camera:leave", camera.deviceId, () => {});
@@ -1038,7 +1066,14 @@ console.log(
                   Generate a one-time code and enter it on your Android phone at /camera.
                 </p>
               </div>
-
+              <button
+                    type="button"
+                    onClick={() => navigate("/camera")}
+                    className="rounded-md border border-red-800 bg-blue-700 px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-blue-500/20"
+                  >
+                    <span className="mr-2">📱</span>
+                    Use This Phone as Camera
+                  </button>
               <button
                 type="button"
                 onClick={generateCameraPairingCode}
@@ -1343,6 +1378,34 @@ console.log(
                 </div>
               </div>
 
+              <div className="mb-3 overflow-hidden rounded-lg border border-emerald-500/20 bg-[#1b2029]">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/5 px-4 py-3">
+                  <div>
+                    <p className="text-xs font-semibold text-white">Custom WebRTC Live Viewer</p>
+                    <p className="mt-1 text-[10px] text-slate-500">
+                      {selectedCamera?.deviceName || "Select a camera"} · {streamStatus}
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-300">
+                    PEER-TO-PEER WEBRTC
+                  </span>
+                </div>
+                <div className="relative aspect-video bg-black">
+                  <video
+                    ref={remoteVideoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="absolute inset-0 h-full w-full object-contain"
+                  />
+                  {!remoteStream && (
+                    <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-xs text-slate-500">
+                      {streamError || "Waiting for WebRTC video stream..."}
+                    </div>
+                  )}
+                </div>
+              </div>
+
               <div className="mb-3 overflow-hidden rounded-lg border border-white/10 bg-[#1b2029]">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/5 px-4 py-3">
                   <div>
@@ -1354,7 +1417,7 @@ console.log(
                     </p>
                   </div>
                   <span className="rounded-full bg-blue-500/10 px-2.5 py-1 text-[10px] font-semibold text-blue-300">
-                    DCAST CLOUD STREAM
+                    DCAST CLOUD STREAM (FALLBACK)
                   </span>
                 </div>
                 <div className="aspect-video bg-black">
