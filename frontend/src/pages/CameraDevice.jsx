@@ -365,6 +365,16 @@ const frameInFlightRef = useRef(false);
         }
 
         const stream = streamRef.current;
+        console.log("[CAMERA DEBUG] Local Stream:", {
+  streamExists: !!stream,
+  tracks: stream?.getTracks().map((track) => ({
+    kind: track.kind,
+    label: track.label,
+    enabled: track.enabled,
+    muted: track.muted,
+    readyState: track.readyState,
+  })),
+});
         if (!stream || !stream.getTracks().some((track) => track.readyState === "live")) {
           setError("Dashboard requested video, but the phone camera is not running.");
           socket.emit("webrtc:device-error", {
@@ -385,6 +395,12 @@ const frameInFlightRef = useRef(false);
           stream.getTracks().forEach((track) => {
             pc.addTrack(track, stream);
           });
+          console.log("[CAMERA DEBUG] RTCRtpSenders:", 
+  pc.getSenders().map((sender) => ({
+    kind: sender.track?.kind,
+    readyState: sender.track?.readyState,
+  }))
+);
 
           pc.onicecandidate = (event) => {
             if (!event.candidate) {
@@ -617,20 +633,22 @@ const frameInFlightRef = useRef(false);
       return;
     }
 
-    if (!DCAST_WHIP_URL) {
-      setError("DCAST WHIP is not configured. Add VITE_DCAST_WHIP_URL to the frontend environment and rebuild.");
-      return;
-    }
-
     if (!navigator.mediaDevices?.getUserMedia) {
       setError("Camera access requires HTTPS or localhost and a supported browser.");
       return;
     }
 
+    // Avoid opening a second camera capture if the stream is already running.
+    if (streamRef.current?.getTracks().some((track) => track.readyState === "live")) {
+      setCameraStatus("running");
+      setNotice("Camera is already running and available for WebRTC viewers.");
+      return;
+    }
+
     let stream;
-    let peerConnection;
 
     try {
+      // One shared capture stream is used by Custom WebRTC and, optionally, DCAST.
       stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
         video: {
@@ -647,67 +665,85 @@ const frameInFlightRef = useRef(false);
         await videoRef.current.play();
       }
 
-      peerConnection = new RTCPeerConnection({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-      });
-      whipPeerConnectionRef.current = peerConnection;
-
-      stream.getTracks().forEach((track) => {
-        peerConnection.addTrack(track, stream);
-      });
-
-      peerConnection.addEventListener("connectionstatechange", () => {
-        console.log("[DCAST WHIP] Connection state:", peerConnection.connectionState);
-        if (peerConnection.connectionState === "connected") {
-          startWhipStats(peerConnection);
-        }
-        if (["failed", "closed"].includes(peerConnection.connectionState)) {
-          stopWhipStats();
-        }
-        if (peerConnection.connectionState === "failed") {
-          setCameraStatus("stopped");
-          setError("DCAST WHIP connection failed. Check the phone network and WHIP URL.");
-        }
-      });
-
-      const offer = await peerConnection.createOffer();
-      await peerConnection.setLocalDescription(offer);
-      await waitForIceGatheringComplete(peerConnection);
-
-      const response = await fetch(DCAST_WHIP_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/sdp" },
-        body: peerConnection.localDescription.sdp,
-      });
-
-      if (!response.ok) {
-        const responseText = await response.text().catch(() => "");
-        throw new Error(`DCAST WHIP rejected the offer (${response.status}). ${responseText.slice(0, 180)}`);
-      }
-
-      const answerSdp = await response.text();
-      if (!answerSdp || !answerSdp.startsWith("v=")) {
-        throw new Error("DCAST returned an invalid WHIP SDP answer.");
-      }
-
-      const locationHeader = response.headers.get("Location");
-      if (locationHeader) {
-        whipSessionUrlRef.current = new URL(locationHeader, DCAST_WHIP_URL).toString();
-      }
-
-      await peerConnection.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      // The local camera is now available to the Custom WebRTC signaling handler.
       setCameraStatus("running");
-      setNotice("Camera is publishing to DCAST Cloud. Open the Dashboard to verify the live video.");
-    } catch (cameraError) {
-      console.error("[DCAST WHIP] Publish error:", cameraError);
-      stopWhipStats();
+      setNotice("Camera is running and ready for direct Dashboard WebRTC connections.");
 
-      if (peerConnection) {
-        peerConnection.close();
-        if (whipPeerConnectionRef.current === peerConnection) {
-          whipPeerConnectionRef.current = null;
-        }
+      // DCAST is optional. A missing or failed WHIP endpoint must not stop
+      // the local camera stream or the independent Custom WebRTC feature.
+      if (!DCAST_WHIP_URL) {
+        console.info("[CAMERA] DCAST WHIP is not configured; continuing with Custom WebRTC only.");
+        return;
       }
+
+      let whipPeerConnection;
+      try {
+        whipPeerConnection = new RTCPeerConnection({
+          iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+        });
+        whipPeerConnectionRef.current = whipPeerConnection;
+
+        stream.getTracks().forEach((track) => {
+          whipPeerConnection.addTrack(track, stream);
+        });
+
+        whipPeerConnection.addEventListener("connectionstatechange", () => {
+          console.log("[DCAST WHIP] Connection state:", whipPeerConnection.connectionState);
+          if (whipPeerConnection.connectionState === "connected") {
+            startWhipStats(whipPeerConnection);
+          }
+          if (["failed", "closed"].includes(whipPeerConnection.connectionState)) {
+            stopWhipStats();
+          }
+          // Do not stop the local camera: Custom WebRTC is independent of DCAST.
+          if (whipPeerConnection.connectionState === "failed") {
+            setError("DCAST publishing failed, but the local camera remains available for Custom WebRTC.");
+          }
+        });
+
+        const offer = await whipPeerConnection.createOffer();
+        await whipPeerConnection.setLocalDescription(offer);
+        await waitForIceGatheringComplete(whipPeerConnection);
+
+        const response = await fetch(DCAST_WHIP_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/sdp" },
+          body: whipPeerConnection.localDescription.sdp,
+        });
+
+        if (!response.ok) {
+          const responseText = await response.text().catch(() => "");
+          throw new Error(`DCAST WHIP rejected the offer (${response.status}). ${responseText.slice(0, 180)}`);
+        }
+
+        const answerSdp = await response.text();
+        if (!answerSdp || !answerSdp.startsWith("v=")) {
+          throw new Error("DCAST returned an invalid WHIP SDP answer.");
+        }
+
+        const locationHeader = response.headers.get("Location");
+        if (locationHeader) {
+          whipSessionUrlRef.current = new URL(locationHeader, DCAST_WHIP_URL).toString();
+        }
+
+        await whipPeerConnection.setRemoteDescription({ type: "answer", sdp: answerSdp });
+        setNotice("Camera is running. Custom WebRTC is ready and DCAST Cloud publishing is connected.");
+      } catch (dcastError) {
+        console.error("[DCAST WHIP] Optional publishing failed:", dcastError);
+        stopWhipStats();
+
+        if (whipPeerConnection) {
+          whipPeerConnection.close();
+          if (whipPeerConnectionRef.current === whipPeerConnection) {
+            whipPeerConnectionRef.current = null;
+          }
+        }
+
+        setError(`DCAST publishing unavailable: ${dcastError.message || "Unknown error"}. The local camera remains running for Custom WebRTC.`);
+      }
+    } catch (cameraError) {
+      console.error("[CAMERA] Capture start failed:", cameraError);
+
       if (stream) {
         stream.getTracks().forEach((track) => track.stop());
         if (streamRef.current === stream) streamRef.current = null;
@@ -716,8 +752,8 @@ const frameInFlightRef = useRef(false);
 
       setCameraStatus("stopped");
       const message = cameraError.name === "NotAllowedError"
-        ? "Camera permission was denied. Allow camera access in Chrome settings."
-        : cameraError.message || "Unable to publish camera to DCAST.";
+        ? "Camera permission was denied. Allow camera access in browser settings."
+        : cameraError.message || "Unable to start the phone camera.";
       setError(message);
     }
   };
