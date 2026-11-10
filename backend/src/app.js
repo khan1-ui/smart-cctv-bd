@@ -16,7 +16,8 @@ const allowedOrigins = (process.env.CLIENT_URL || "http://localhost:5173")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
-
+console.log("[CORS DEBUG] CLIENT_URL:", process.env.CLIENT_URL);
+console.log("[CORS DEBUG] Allowed Origins:", allowedOrigins);
 app.disable("x-powered-by");
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
