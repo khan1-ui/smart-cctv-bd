@@ -7,6 +7,7 @@ const router = express.Router();
 const deviceAuth = require("../../middlewares/deviceAuth.middleware");
 const { protect } = require("../../middlewares/auth.middleware");
 const { checkCameraAccess,} = require("../../middlewares/cameraAccess.middleware");
+const { createDeviceRecordingMetadata } = require("../recordings/recording.controller");
 const {
   generatePairingCode,
   registerDevice,
@@ -17,6 +18,8 @@ const {
   disableDevice,
   enableDevice,
   rotateDeviceSecret,
+  renameDevice,
+  removeDevice,
 } = require("./device.controller");
 
 const {
@@ -38,8 +41,12 @@ router.post("/register", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message:
 // Device authentication routes
 router.get("/me", deviceAuth, getDeviceProfile);
 router.post("/heartbeat", deviceAuth, sendHeartbeat);
+router.post("/:deviceId/recordings", deviceAuth, createDeviceRecordingMetadata);
 // Get all cameras owned by authenticated user.
 router.get("/", protect, getMyDevices);
+// Owner camera management.
+router.patch("/:deviceId/rename", protect, renameDevice);
+router.delete("/:deviceId", protect, removeDevice);
 // Owner can disable or enable their camera.
 router.patch("/:deviceId/disable", protect, disableDevice);
 router.patch("/:deviceId/enable", protect, enableDevice);

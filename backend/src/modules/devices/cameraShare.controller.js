@@ -17,6 +17,8 @@ const inviteCameraMember = async (req, res) => {
   try {
     const { deviceId } = req.params;
     const { email } = req.body;
+    const requestedPermissions = req.body?.permissions ?? ["live_view"];
+    const allowedPermissions = ["live_view", "recordings_view"];
 
     // Validate email.
     if (typeof email !== "string" || !email.trim()) {
@@ -24,6 +26,10 @@ const inviteCameraMember = async (req, res) => {
         success: false,
         message: "Member email is required",
       });
+    }
+
+    if (!Array.isArray(requestedPermissions) || requestedPermissions.length === 0 || requestedPermissions.some((permission) => !allowedPermissions.includes(permission))) {
+      return res.status(400).json({ success: false, message: "Invalid camera permissions" });
     }
 
     const normalizedEmail = email.toLowerCase().trim();
@@ -131,7 +137,7 @@ const inviteCameraMember = async (req, res) => {
             $set: {
               ownerId: req.user._id,
               status: "pending",
-              permissions: ["live_view"],
+              permissions: requestedPermissions,
               expiresAt: invitationExpiresAt,
               acceptedAt: null,
             },
@@ -159,7 +165,7 @@ const inviteCameraMember = async (req, res) => {
               ownerId: req.user._id,
               memberId: member._id,
               status: "pending",
-              permissions: ["live_view"],
+              permissions: requestedPermissions,
               expiresAt: invitationExpiresAt,
               acceptedAt: null,
             },

@@ -88,7 +88,7 @@ const loginUser = async (req, res, next) => {
     // Find user and explicitly include password
     const user = await User.findOne({
       email: email.toLowerCase().trim(),
-    }).select("+password");
+    }).select("+password +tokenVersion");
 
     // Check credentials
     if (!user || !(await user.comparePassword(password))) {
@@ -111,6 +111,7 @@ const loginUser = async (req, res, next) => {
       {
         userId: user._id.toString(),
         role: user.role,
+        tokenVersion: user.tokenVersion || 0,
       },
       process.env.JWT_SECRET,
       {
@@ -154,10 +155,39 @@ const getMyProfile = async (req, res) => {
   });
 };
 
+// @desc Change password for the authenticated account
+// @route PATCH /api/users/password
+// @access Private
+const changePassword = async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    if (typeof currentPassword !== "string" || typeof newPassword !== "string") {
+      return res.status(400).json({ success: false, message: "Current and new password are required" });
+    }
+    if (newPassword.length < 8 || newPassword.length > 128) {
+      return res.status(400).json({ success: false, message: "New password must be between 8 and 128 characters" });
+    }
+    if (currentPassword === newPassword) {
+      return res.status(400).json({ success: false, message: "New password must be different from current password" });
+    }
+    const user = await User.findById(req.user._id).select("+password +tokenVersion");
+    if (!user || !(await user.comparePassword(currentPassword))) {
+      return res.status(401).json({ success: false, message: "Current password is incorrect" });
+    }
+    user.password = newPassword;
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    await user.save();
+    return res.status(200).json({ success: true, message: "Password changed successfully. Please sign in again." });
+  } catch (error) {
+    next(error);
+  }
+};
+
 
 module.exports = {
   registerUser,
   loginUser,
   getMyProfile,
+  changePassword,
 };
 

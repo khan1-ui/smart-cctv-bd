@@ -26,9 +26,9 @@ const protect = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     // Find authenticated user
-    const user = await User.findById(decoded.userId);
+    const user = await User.findById(decoded.userId).select("+tokenVersion");
 
-    if (!user || !user.isActive) {
+    if (!user || !user.isActive || (decoded.tokenVersion ?? 0) !== (user.tokenVersion || 0)) {
       return res.status(401).json({
         success: false,
         message: "User not found or account disabled",

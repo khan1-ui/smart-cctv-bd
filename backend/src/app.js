@@ -4,6 +4,7 @@ const rateLimit = require("./middlewares/rateLimit.middleware");
 
 const deviceRoutes = require("./modules/devices/device.routes");
 const userRoutes = require("./modules/users/user.routes");
+const recordingRoutes = require("./modules/recordings/recording.routes");
 
 const app = express();
 
@@ -16,8 +17,6 @@ const allowedOrigins = (process.env.CLIENT_URL || "http://localhost:5173")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
-console.log("[CORS DEBUG] CLIENT_URL:", process.env.CLIENT_URL);
-console.log("[CORS DEBUG] Allowed Origins:", allowedOrigins);
 app.disable("x-powered-by");
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
@@ -56,6 +55,7 @@ app.get("/api/health", (req, res) => {
 
 app.use("/api/users", userRoutes);
 app.use("/api/devices", deviceRoutes);
+app.use("/api/recordings", recordingRoutes);
 
 app.use((req, res) => res.status(404).json({ success: false, message: "Route not found" }));
 

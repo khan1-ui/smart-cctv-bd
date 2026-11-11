@@ -571,6 +571,53 @@ const rotateDeviceSecret = async (req, res, next) => {
   }
 };
 
+
+/**
+ * Rename a camera owned by the authenticated user.
+ */
+const renameDevice = async (req, res, next) => {
+  try {
+    const { deviceId } = req.params;
+    const { deviceName } = req.body || {};
+    if (typeof deviceName !== "string" || !deviceName.trim() || deviceName.trim().length > 50) {
+      return res.status(400).json({ success: false, message: "Device name must be between 1 and 50 characters" });
+    }
+    const device = await Device.findOneAndUpdate(
+      { deviceId, ownerId: req.user._id, isPaired: true },
+      { $set: { deviceName: deviceName.trim() } },
+      { new: true, runValidators: true }
+    );
+    if (!device) return res.status(404).json({ success: false, message: "Camera not found" });
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`user:${device.ownerId}`).emit("camera:renamed", { deviceId, deviceName: device.deviceName });
+    }
+    return res.json({ success: true, message: "Camera renamed successfully", data: { deviceId, deviceName: device.deviceName } });
+  } catch (error) { next(error); }
+};
+
+/**
+ * Permanently remove an owned camera and its sharing/recording metadata.
+ * Media files remain on the camera storage and must be removed by its device agent.
+ */
+const removeDevice = async (req, res, next) => {
+  try {
+    const { deviceId } = req.params;
+    const device = await Device.findOneAndDelete({ deviceId, ownerId: req.user._id });
+    if (!device) return res.status(404).json({ success: false, message: "Camera not found" });
+    await Promise.all([
+      CameraShare.deleteMany({ deviceId: device._id }),
+      require("../recordings/recording.model").deleteMany({ device: device._id }),
+    ]);
+    const io = req.app.get("io");
+    const deviceNamespace = req.app.get("deviceNamespace");
+    await clearCameraRoom(io, deviceId);
+    disconnectDeviceSockets(deviceNamespace, deviceId);
+    if (io) io.to(`user:${device.ownerId}`).emit("camera:removed", { deviceId });
+    return res.json({ success: true, message: "Camera removed successfully" });
+  } catch (error) { next(error); }
+};
+
 /**
  * Export the new controller.
  */
@@ -584,4 +631,6 @@ module.exports = {
   disableDevice,
   enableDevice,
   rotateDeviceSecret,
+  renameDevice,
+  removeDevice,
 };

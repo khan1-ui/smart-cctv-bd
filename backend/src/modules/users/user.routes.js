@@ -7,6 +7,7 @@ const {
   registerUser,
   loginUser,
   getMyProfile,
+  changePassword,
 } = require("./user.controller");
 
 const  {protect} = require("../../middlewares/auth.middleware");
@@ -16,5 +17,6 @@ router.post("/login", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message: "T
 
 // Protected route
 router.get("/me", protect, getMyProfile);
+router.patch("/password", protect, rateLimit({ windowMs: 15 * 60 * 1000, max: 5 }), changePassword);
 
 module.exports = router;

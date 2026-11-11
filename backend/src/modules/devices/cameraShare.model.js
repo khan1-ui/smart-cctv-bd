@@ -29,7 +29,7 @@ const cameraShareSchema = new mongoose.Schema(
 
     permissions: {
       type: [String],
-      enum: ["live_view"],
+      enum: ["live_view", "recordings_view"],
       default: ["live_view"],
     },
 
