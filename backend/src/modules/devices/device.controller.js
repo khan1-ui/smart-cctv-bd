@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const crypto = require("crypto");
 const Pairing = require("./pairing.model");
 const Device = require("./device.model");
+const CameraShare = require("./cameraShare.model"); 
 const generateDeviceId = require("../../utils/generateDeviceId");
 const { clearCameraRoom } = require("../../socket/cameraRoom.service");
 
