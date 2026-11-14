@@ -1,0 +1,181 @@
+/* Smart CCTV BD — modern monitoring workspace */
+.dashboard-app {
+  --sc-bg: #090f1d;
+  --sc-panel: #111b2b;
+  --sc-panel-soft: #152236;
+  --sc-border: rgba(148, 163, 184, .14);
+  --sc-muted: #91a0b7;
+  background:
+    radial-gradient(ellipse at 70% -20%, rgba(16, 185, 129, .10), transparent 38%),
+    var(--sc-bg) !important;
+  color: #e7edf7;
+}
+.dashboard-app > div { min-height: 100vh; }
+.dashboard-app aside {
+  background: rgba(12, 20, 34, .96) !important;
+  border-color: var(--sc-border) !important;
+}
+.dashboard-app aside:first-child { width: 68px !important; }
+.dashboard-app aside:nth-child(2) { width: 218px !important; padding: 25px 14px !important; }
+.dashboard-app main { background: transparent !important; min-width: 0; }
+.dashboard-app main > header {
+  height: 76px !important;
+  padding-inline: clamp(18px, 3vw, 42px) !important;
+  background: rgba(12, 20, 34, .84) !important;
+  border-color: var(--sc-border) !important;
+  backdrop-filter: blur(18px);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+.dashboard-app main > header h2 { font-size: 19px !important; letter-spacing: -.025em; }
+.dashboard-app main > header p { font-size: 11px !important; color: var(--sc-muted) !important; }
+.dashboard-app main > section:first-of-type {
+  margin: 22px clamp(14px, 2.4vw, 34px) 0 !important;
+  padding: 19px 22px !important;
+  border: 1px solid rgba(52, 211, 153, .20) !important;
+  border-radius: 17px !important;
+  background: linear-gradient(120deg, rgba(17, 39, 48, .96), rgba(17, 27, 43, .96)) !important;
+  box-shadow: 0 16px 40px rgba(0,0,0,.13);
+}
+.dashboard-app main > section:first-of-type h3 { font-size: 15px !important; }
+.dashboard-app main > section:first-of-type p { font-size: 12px !important; line-height: 1.6; }
+.dashboard-app main > div.grid {
+  gap: 18px !important;
+  padding: 22px clamp(14px, 2.4vw, 34px) 36px !important;
+  align-items: start;
+}
+.dashboard-app main > div.grid > section {
+  border: 1px solid var(--sc-border) !important;
+  border-radius: 16px !important;
+  background: linear-gradient(180deg, rgba(19, 31, 49, .98), rgba(14, 24, 39, .98)) !important;
+  box-shadow: 0 14px 35px rgba(0,0,0,.12);
+}
+.dashboard-app main > div.grid > section > div:first-child {
+  min-height: 54px !important;
+  border-color: var(--sc-border) !important;
+}
+.dashboard-app input {
+  border-color: var(--sc-border) !important;
+  background: #0b1525 !important;
+  border-radius: 10px !important;
+  min-height: 40px;
+}
+.dashboard-app button { transition: background .18s ease, border-color .18s ease, transform .18s ease; }
+.dashboard-app button:focus-visible {
+  outline: 2px solid #34d399;
+  outline-offset: 3px;
+}
+.dashboard-app .dashboard-live-viewer {
+  border: 1px solid rgba(52, 211, 153, .25) !important;
+  border-radius: 18px !important;
+  background: #050a12 !important;
+  box-shadow: 0 18px 48px rgba(0,0,0,.28);
+}
+.dashboard-app .dashboard-live-viewer > div:first-child {
+  min-height: 66px;
+  padding: 14px 18px !important;
+  background: #101c2c;
+  border-color: var(--sc-border) !important;
+}
+.dashboard-app .dashboard-live-viewer > div:first-child p:first-child { font-size: 13px !important; }
+.dashboard-app .dashboard-live-viewer > div:first-child p:nth-child(2) { font-size: 11px !important; }
+.dashboard-app .dashboard-live-viewer > div:nth-child(2) {
+  min-height: 250px;
+  max-height: min(62vh, 680px);
+  background:
+    radial-gradient(circle at center, rgba(22, 40, 58, .35), transparent 60%),
+    #03070d !important;
+}
+.dashboard-app .dashboard-live-viewer video,
+.dashboard-app .dashboard-live-viewer img { object-fit: contain !important; }
+.dashboard-app .dashboard-live-viewer-expanded:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  max-height: none;
+  margin: 0;
+  border: 0 !important;
+  border-radius: 0 !important;
+  display: flex;
+  flex-direction: column;
+  background: #02050a !important;
+}
+.dashboard-app .dashboard-live-viewer-expanded:fullscreen > div:nth-child(2) {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  aspect-ratio: auto;
+}
+.dashboard-app .dashboard-live-viewer-expanded:fullscreen video,
+.dashboard-app .dashboard-live-viewer-expanded:fullscreen img {
+  object-fit: contain !important;
+}
+.dashboard-app .dashboard-live-viewer-expanded:not(:fullscreen) {
+  position: fixed;
+  z-index: 1000;
+  inset: 14px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 0 0 100vmax rgba(1, 5, 12, .94), 0 24px 80px rgba(0,0,0,.55);
+}
+.dashboard-app .dashboard-live-viewer-expanded:not(:fullscreen) > div:nth-child(2) {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+.dashboard-app .dashboard-live-viewer-expanded:not(:fullscreen) video,
+.dashboard-app .dashboard-live-viewer-expanded:not(:fullscreen) img { object-fit: contain !important; }
+.dashboard-app .dashboard-live-viewer-expanded:not(:fullscreen) { background: #03070d !important; }
+.dashboard-app main > div.grid > section:last-child > section {
+  border-radius: 16px !important;
+  border-color: var(--sc-border) !important;
+  background: linear-gradient(180deg, #132033, #0e1929) !important;
+  margin-bottom: 16px;
+}
+.dashboard-app main > div.grid > section:last-child > section button[aria-label] { cursor: pointer; }
+.dashboard-app main > div.grid > section:last-child .grid > div {
+  border-radius: 15px !important;
+  border-color: var(--sc-border) !important;
+  background: #111e30 !important;
+  transition: transform .2s ease, border-color .2s ease, box-shadow .2s ease;
+}
+.dashboard-app main > div.grid > section:last-child .grid > div:hover {
+  transform: translateY(-2px);
+  border-color: rgba(52, 211, 153, .35) !important;
+  box-shadow: 0 12px 28px rgba(0,0,0,.18);
+}
+.dashboard-app main > div.grid > section:last-child {
+  grid-column: 1 / -1;
+  min-width: 0;
+  width: 100%;
+}
+.dashboard-app main > div.grid > section:last-child .grid > div > button:first-child {
+  min-height: 150px;
+  background: linear-gradient(135deg, #1b3446, #101b2d 60%, #0b1422) !important;
+}
+.dashboard-app main > div.grid > section:last-child .grid > div > div:last-child { padding: 14px !important; }
+.dashboard-app .text-slate-500 { color: #8c9bb1 !important; }
+.dashboard-app .border-white\/5,
+.dashboard-app .border-white\/10 { border-color: var(--sc-border) !important; }
+.dashboard-app .bg-\[\#1b2029\],
+.dashboard-app .bg-\[\#202630\],
+.dashboard-app .bg-\[\#191c22\],
+.dashboard-app .bg-\[\#171a20\] { background-color: var(--sc-panel) !important; }
+.dashboard-app .bg-\[\#111620\] { background-color: #0c1626 !important; }
+
+@media (max-width: 1100px) {
+  .dashboard-app aside:nth-child(2) { width: 190px !important; }
+  .dashboard-app main > div.grid { grid-template-columns: minmax(0, 1fr) !important; }
+  .dashboard-app main > div.grid > section { width: 100%; }
+}
+@media (max-width: 640px) {
+  .dashboard-app > div { display: block !important; }
+  .dashboard-app aside:first-child,
+  .dashboard-app aside:nth-child(2) { display: none !important; }
+  .dashboard-app main > header { height: 66px !important; padding-inline: 14px !important; }
+  .dashboard-app main > section:first-of-type { margin: 12px 12px 0 !important; padding: 15px !important; }
+  .dashboard-app main > div.grid { padding: 12px !important; gap: 12px !important; }
+  .dashboard-app .dashboard-live-viewer > div:nth-child(2) { min-height: 190px; }
+  .dashboard-app .dashboard-live-viewer-expanded:not(:fullscreen) { inset: 6px; }
+  .dashboard-app main > div.grid > section:last-child .grid { grid-template-columns: minmax(0,1fr) !important; }
+}

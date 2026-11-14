@@ -7,7 +7,7 @@ import {
   getStoredCameraDeviceId,
   registerCameraDevice,
   sendCameraHeartbeat,
-} from "../services/cameraDevice";
+} from "../services/cameraDevice"; 
 
 const HEARTBEAT_INTERVAL_MS = 30 * 1000;
 const DCAST_WHIP_URL = import.meta.env.VITE_DCAST_WHIP_URL || "";
@@ -392,15 +392,26 @@ const frameInFlightRef = useRef(false);
           monitorWebRTC(pc, "CAMERA");
           peerConnectionsRef.current.set(viewerSocketId, pc);
               
-          stream.getTracks().forEach((track) => {
+          const liveTracks = stream.getTracks().filter(
+            (track) => track.readyState === "live" && track.enabled
+          );
+
+          liveTracks.forEach((track) => {
             pc.addTrack(track, stream);
           });
-          console.log("[CAMERA DEBUG] RTCRtpSenders:", 
-  pc.getSenders().map((sender) => ({
-    kind: sender.track?.kind,
-    readyState: sender.track?.readyState,
-  }))
-);
+
+          console.log("[CAMERA DEBUG] RTCRtpSenders:", pc.getSenders().map((sender) => ({
+            kind: sender.track?.kind,
+            label: sender.track?.label,
+            enabled: sender.track?.enabled,
+            muted: sender.track?.muted,
+            readyState: sender.track?.readyState,
+            settings: sender.track?.getSettings?.(),
+          })));
+
+          if (!pc.getSenders().some((sender) => sender.track?.kind === "video")) {
+            throw new Error("No active video track is available to send to the Dashboard.");
+          }
 
           pc.onicecandidate = (event) => {
             if (!event.candidate) {
@@ -660,6 +671,20 @@ const frameInFlightRef = useRef(false);
       });
 
       streamRef.current = stream;
+
+      const videoTrack = stream.getVideoTracks()[0];
+      console.log("[CAMERA] Captured video source:", {
+        label: videoTrack?.label,
+        enabled: videoTrack?.enabled,
+        muted: videoTrack?.muted,
+        readyState: videoTrack?.readyState,
+        settings: videoTrack?.getSettings?.(),
+      });
+
+      if (!videoTrack || videoTrack.readyState !== "live") {
+        throw new Error("The selected camera did not provide a live video track.");
+      }
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();

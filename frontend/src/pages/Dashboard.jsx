@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getMyDevices } from "../services/device";
+import { getMyDevices, renameCamera, removeCamera, getCameraRecordings } from "../services/device";
 import { connectSocket, disconnectSocket } from "../services/socket";
 import api from "../services/api";
+import "../styles/dashboard.css";
 const DCAST_EMBED_URL = "https://dcast.tv/embed/deb044115dd6f6b0f66ca02cea1e41be";
 
 
@@ -102,6 +103,9 @@ function Dashboard() {
 
   const [cameras, setCameras] = useState([]);
   const [selectedCamera, setSelectedCamera] = useState(null);
+  const [recordings, setRecordings] = useState([]);
+  const [recordingsError, setRecordingsError] = useState("");
+  const [recordingsLoading, setRecordingsLoading] = useState(false);
 
   const [search, setSearch] = useState("");
   const [showDevicePanel, setShowDevicePanel] = useState(true);
@@ -113,6 +117,8 @@ function Dashboard() {
 
   // WebRTC viewer state.
   const [streamStatus, setStreamStatus] = useState("idle");
+  const [viewerFullscreen, setViewerFullscreen] = useState(false);
+  const viewerContainerRef = useRef(null);
   const [streamError, setStreamError] = useState("");
   const [remoteStream, setRemoteStream] = useState(null);
   const [jpegFrameUrl, setJpegFrameUrl] = useState(null);
@@ -162,13 +168,46 @@ const jpegStatsRef = useRef({
   };
 
   useEffect(() => {
-    if (remoteVideoRef.current && remoteStream && remoteVideoRef.current.srcObject !== remoteStream) {
-      remoteVideoRef.current.srcObject = remoteStream;
-      remoteVideoRef.current.play().catch((error) => {
-        console.warn("Remote video autoplay was blocked:", error);
-      });
+    const video = remoteVideoRef.current;
+    if (!video || !remoteStream) return;
+
+    if (video.srcObject !== remoteStream) {
+      video.srcObject = remoteStream;
     }
+    video.muted = true;
+    video.playsInline = true;
+
+    video.play().catch((error) => {
+      console.warn("[DASHBOARD] Remote video autoplay was blocked:", error);
+      setStreamError("Tap the video to start playback if the browser blocks autoplay.");
+    });
   }, [remoteStream]);
+
+  const handleRenameCamera = async () => {
+    if (!selectedCamera) return;
+    const nextName = window.prompt("Enter a new camera name", selectedCamera.deviceName);
+    if (nextName === null) return;
+    try {
+      await renameCamera(selectedCamera.deviceId, nextName);
+      setSelectedCamera((current) => current?.deviceId === selectedCamera.deviceId ? { ...current, deviceName: nextName.trim() } : current);
+      setCameras((current) => current.map((camera) => camera.deviceId === selectedCamera.deviceId ? { ...camera, deviceName: nextName.trim() } : camera));
+    } catch (error) {
+      window.alert(error.response?.data?.message || "Unable to rename camera.");
+    }
+  };
+
+  const handleRemoveCamera = async () => {
+    if (!selectedCamera) return;
+    const confirmed = window.confirm(`Permanently remove "${selectedCamera.deviceName}"? This also removes its sharing and recording metadata.`);
+    if (!confirmed) return;
+    try {
+      await removeCamera(selectedCamera.deviceId);
+      setSelectedCamera(null);
+      await loadCameras();
+    } catch (error) {
+      window.alert(error.response?.data?.message || "Unable to remove camera.");
+    }
+  };
 
   // Fetch the authenticated user's paired cameras.
   const loadCameras = async () => {
@@ -206,6 +245,29 @@ const jpegStatsRef = useRef({
   useEffect(() => {
     loadCameras();
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    if (!selectedCamera?.deviceId) {
+      setRecordings([]);
+      setRecordingsError("");
+      return undefined;
+    }
+    setRecordingsLoading(true);
+    setRecordingsError("");
+    getCameraRecordings(selectedCamera.deviceId)
+      .then((result) => {
+        if (active) setRecordings(Array.isArray(result?.recordings) ? result.recordings : []);
+      })
+      .catch((error) => {
+        if (active) {
+          setRecordings([]);
+          setRecordingsError(error.response?.data?.message || "Recording list is not available for this account.");
+        }
+      })
+      .finally(() => { if (active) setRecordingsLoading(false); });
+    return () => { active = false; };
+  }, [selectedCamera?.deviceId]);
 
   // Listen for authorized, owner-specific camera status updates.
   useEffect(() => {
@@ -573,6 +635,8 @@ console.trace();
         });
 
         pc.ontrack = (event) => {
+  if (cancelled || peerConnectionRef.current !== pc) return;
+
   console.log("[DASHBOARD] VIDEO TRACK RECEIVED:", {
     trackKind: event.track?.kind,
     trackId: event.track?.id,
@@ -582,22 +646,53 @@ console.trace();
     receiverTrack: event.receiver?.track?.kind,
   });
 
-  const stream =
-    event.streams?.[0] ||
-    new MediaStream([event.track]);
+  // Use the browser-provided stream when available. Some WebRTC senders
+  // deliver a track without an associated stream, so create one in that case.
+  const stream = event.streams?.[0] || new MediaStream([event.track]);
 
-  setRemoteStream(stream);
+  if (event.track?.kind === "video") {
+    event.track.onunmute = () => {
+      if (cancelled || peerConnectionRef.current !== pc) return;
+      console.log("[DASHBOARD] Remote video track unmuted; frames can now render.");
+      setStreamStatus("live");
+      setStreamError("");
+      const video = remoteVideoRef.current;
+      if (video && video.srcObject !== stream) video.srcObject = stream;
+      video?.play?.().catch((error) => {
+        console.warn("[DASHBOARD] Video playback after unmute failed:", error);
+      });
+    };
 
-  if (remoteVideoRef.current) {
-    remoteVideoRef.current.srcObject = stream;
+    event.track.onmute = () => {
+      if (!cancelled && peerConnectionRef.current === pc) {
+        console.warn("[DASHBOARD] Remote video track muted.");
+        setStreamStatus("connecting");
+      }
+    };
 
-    remoteVideoRef.current.play().catch((error) => {
-      console.warn("[DASHBOARD] Video playback error:", error);
-    });
+    event.track.onended = () => {
+      if (!cancelled && peerConnectionRef.current === pc) {
+        setStreamStatus("offline");
+        setStreamError("The camera video track has ended.");
+      }
+    };
   }
 
-  setStreamStatus("live");
+  setRemoteStream(stream);
+  setStreamStatus(event.track?.muted ? "connecting" : "live");
   setStreamError("");
+
+  const video = remoteVideoRef.current;
+  if (video) {
+    video.srcObject = stream;
+    video.muted = true;
+    video.playsInline = true;
+    video.autoplay = true;
+    video.play().catch((error) => {
+      console.warn("[DASHBOARD] Video playback request was blocked:", error);
+      setStreamError("Video is connected, but browser playback was blocked. Tap the video or refresh the viewer.");
+    });
+  }
 };
 
         // Trickle ICE: send each Dashboard candidate to the Camera via Socket.IO.
@@ -840,9 +935,48 @@ console.trace();
     );
   }, [cameras, search]);
 
-  const selectCamera = (camera) => {
-    setSelectedCamera(camera);
+  const openFullscreenViewer = () => {
+    setViewerFullscreen(true);
+    const viewer = viewerContainerRef.current;
+    if (viewer?.requestFullscreen) {
+      viewer.requestFullscreen().catch((error) => {
+        console.warn("[DASHBOARD] Native fullscreen unavailable; using expanded viewer.", error);
+      });
+    }
   };
+
+  const selectCamera = (camera, openFullscreen = false) => {
+    setSelectedCamera(camera);
+    if (openFullscreen) openFullscreenViewer();
+  };
+
+  const closeFullscreenViewer = async () => {
+    setViewerFullscreen(false);
+    if (document.fullscreenElement && document.exitFullscreen) {
+      try {
+        await document.exitFullscreen();
+      } catch (error) {
+        console.warn("[DASHBOARD] Could not exit native fullscreen:", error);
+      }
+    }
+  };
+
+  useEffect(() => {
+    const syncFullscreenState = () => {
+      if (!document.fullscreenElement) setViewerFullscreen(false);
+    };
+    const handleEscape = (event) => {
+      if (event.key === "Escape" && viewerFullscreen && !document.fullscreenElement) {
+        setViewerFullscreen(false);
+      }
+    };
+    document.addEventListener("fullscreenchange", syncFullscreenState);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("fullscreenchange", syncFullscreenState);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [viewerFullscreen]);
 
   const getStatusClasses = (status) => {
     if (status === "online") {
@@ -879,7 +1013,7 @@ console.trace();
   };
 
   return (
-    <div className="min-h-screen bg-[#101521] text-slate-200">
+    <div className="dashboard-app min-h-screen bg-[#101521] text-slate-200">
       <div className="flex min-h-screen">
         {/* Icon Sidebar */}
         <aside className="hidden w-[58px] shrink-0 flex-col items-center border-r border-white/5 bg-[#171a20] py-5 md:flex">
@@ -898,6 +1032,7 @@ console.trace();
                 key={label}
                 type="button"
                 title={label}
+                onClick={() => { if (label === "Settings") navigate("/settings"); }}
                 className={`flex h-10 w-10 items-center justify-center rounded-lg text-lg transition ${
                   index === 0
                     ? "bg-blue-500/15 text-blue-400"
@@ -913,6 +1048,7 @@ console.trace();
             type="button"
             className="text-xl text-slate-500 hover:text-white"
             title="Settings"
+            onClick={() => navigate("/settings")}
           >
             ⚙
           </button>
@@ -1189,7 +1325,7 @@ console.trace();
                         <button
                           key={camera.deviceId}
                           type="button"
-                          onClick={() => selectCamera(camera)}
+                          onClick={() => selectCamera(camera, true)}
                           className={`flex w-full items-center gap-2 rounded-md px-2 py-3 text-left transition ${
                             selectedCamera?.deviceId === camera.deviceId
                               ? "bg-[#303640]"
@@ -1295,6 +1431,10 @@ console.trace();
                           {formatLastSeen(selectedCamera.lastHeartbeat)}
                         </span>
                       </div>
+                      <div className="mt-4 flex gap-2">
+                        <button type="button" onClick={handleRenameCamera} className="flex-1 rounded-md border border-white/10 px-2 py-2 text-[10px] text-slate-200 hover:bg-white/5">Rename</button>
+                        <button type="button" onClick={handleRemoveCamera} className="flex-1 rounded-md border border-red-500/30 px-2 py-2 text-[10px] text-red-300 hover:bg-red-500/10">Remove</button>
+                      </div>
                     </div>
 
                     <div className="border-b border-white/5 px-3 py-3">
@@ -1333,6 +1473,34 @@ console.trace();
                       <span className="text-slate-400">{disabledCount}</span>
                     </div>
                   </div>
+                </div>
+              </section>
+            )}
+
+            {/* Recording metadata and playback readiness */}
+            {selectedCamera && (
+              <section className="mb-3 overflow-hidden rounded-lg border border-white/5 bg-[#1b2029]">
+                <div className="flex items-center justify-between border-b border-white/5 px-3 py-3">
+                  <h3 className="text-xs font-semibold text-white">Recordings</h3>
+                  <span className="text-[9px] text-slate-500">{recordings.length} files indexed</span>
+                </div>
+                <div className="space-y-2 p-3">
+                  {recordingsLoading ? (
+                    <p className="text-[10px] text-slate-500">Loading recording metadata…</p>
+                  ) : recordingsError ? (
+                    <p className="text-[10px] text-amber-300">{recordingsError}</p>
+                  ) : recordings.length === 0 ? (
+                    <p className="text-[10px] text-slate-500">No recording metadata has been uploaded by this camera yet.</p>
+                  ) : recordings.map((recording) => (
+                    <div key={recording._id} className="flex items-center justify-between gap-3 rounded-md border border-white/5 bg-[#202630] p-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-[10px] font-medium text-slate-200">{recording.fileName}</p>
+                        <p className="mt-1 text-[9px] text-slate-500">{new Date(recording.startedAt).toLocaleString()} · {Math.round(recording.durationSeconds)} sec · {(recording.sizeBytes / (1024 * 1024)).toFixed(1)} MB</p>
+                      </div>
+                      <span className="shrink-0 rounded border border-amber-500/20 px-2 py-1 text-[9px] text-amber-300" title="Metadata exists; secure media transfer/playback is not implemented yet">Indexed</span>
+                    </div>
+                  ))}
+                  <p className="text-[9px] leading-4 text-slate-500">Playback will be enabled after authenticated camera-to-dashboard video file transfer is implemented. This list currently displays metadata only.</p>
                 </div>
               </section>
             )}
@@ -1378,7 +1546,10 @@ console.trace();
                 </div>
               </div>
 
-              <div className="mb-3 overflow-hidden rounded-lg border border-emerald-500/20 bg-[#1b2029]">
+              <div
+                ref={viewerContainerRef}
+                className={`dashboard-live-viewer mb-3 overflow-hidden rounded-lg border border-emerald-500/20 bg-[#1b2029] ${viewerFullscreen ? "dashboard-live-viewer-expanded" : ""}`}
+              >
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/5 px-4 py-3">
                   <div>
                     <p className="text-xs font-semibold text-white">Custom WebRTC Live Viewer</p>
@@ -1386,9 +1557,19 @@ console.trace();
                       {selectedCamera?.deviceName || "Select a camera"} · {streamStatus}
                     </p>
                   </div>
-                  <span className="rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-300">
-                    PEER-TO-PEER WEBRTC
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="rounded-full bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-300">
+                      PEER-TO-PEER WEBRTC
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => viewerFullscreen ? closeFullscreenViewer() : openFullscreenViewer()}
+                      className="rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:border-emerald-400/40 hover:bg-white/5"
+                      aria-label={viewerFullscreen ? "Exit fullscreen video" : "Open fullscreen video"}
+                    >
+                      {viewerFullscreen ? "✕ Exit full screen" : "⛶ Full screen"}
+                    </button>
+                  </div>
                 </div>
                 <div className="relative aspect-video bg-black">
                   <video
@@ -1396,11 +1577,48 @@ console.trace();
                     autoPlay
                     playsInline
                     muted
+                    controls
+                    onLoadedMetadata={(event) => {
+                      const video = event.currentTarget;
+                      console.log("[DASHBOARD] Remote video metadata:", {
+                        width: video.videoWidth,
+                        height: video.videoHeight,
+                        readyState: video.readyState,
+                      });
+                      video.play().catch((error) => {
+                        console.warn("[DASHBOARD] Playback start failed:", error);
+                      });
+                    }}
+                    onPlaying={() => {
+                      setStreamStatus("live");
+                      setStreamError("");
+                      console.log("[DASHBOARD] Remote video is playing.");
+                    }}
+                    onWaiting={() => {
+                      setStreamStatus("connecting");
+                    }}
+                    onError={(event) => {
+                      console.error("[DASHBOARD] HTML video element error:", event.currentTarget.error);
+                      setStreamError("The video element could not decode the incoming stream.");
+                    }}
                     className="absolute inset-0 h-full w-full object-contain"
                   />
-                  {!remoteStream && (
-                    <div className="absolute inset-0 flex items-center justify-center px-4 text-center text-xs text-slate-500">
-                      {streamError || "Waiting for WebRTC video stream..."}
+                  {!remoteStream && jpegFrameUrl && (
+                    <img
+                      src={jpegFrameUrl}
+                      alt="Live camera frame"
+                      className="absolute inset-0 h-full w-full object-contain"
+                    />
+                  )}
+                  {(!remoteStream && !jpegFrameUrl) && (
+                    <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 px-4 text-center text-xs text-slate-400">
+                      <span className="text-4xl text-slate-600">◉</span>
+                      <span>{streamError || "Waiting for WebRTC video stream..."}</span>
+                    </div>
+                  )}
+                  {remoteStream && streamStatus !== "live" && !streamError && (
+                    <div className="pointer-events-none absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-black/70 px-3 py-1.5 text-[11px] text-white">
+                      Connecting video frames…
                     </div>
                   )}
                 </div>
@@ -1476,7 +1694,7 @@ console.trace();
                       >
                         <button
                           type="button"
-                          onClick={() => selectCamera(camera)}
+                          onClick={() => selectCamera(camera, true)}
                           className="relative flex aspect-video w-full flex-col items-center justify-center overflow-hidden bg-gradient-to-br from-[#263449] via-[#172233] to-[#0b101b] text-left"
                         >
                           <div className="absolute left-3 top-3 flex items-center gap-1.5 rounded-full bg-black/60 px-2.5 py-1 backdrop-blur">
@@ -1530,7 +1748,7 @@ console.trace();
 
                           <button
                             type="button"
-                            onClick={() => selectCamera(camera)}
+                            onClick={() => selectCamera(camera, true)}
                             className="shrink-0 rounded-md border border-white/10 px-3 py-2 text-[9px] text-slate-300 hover:bg-white/5"
                           >
                             Details
